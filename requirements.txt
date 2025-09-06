@@ -1,0 +1,15 @@
+streamlit
+groq
+requests
+python-dotenv
+supabase
+transformers
+accelerate
+safetensors
+torch
+bitsandbytes
+peft
+trl
+datasets
+huggingface_hub
+langchain-groq
