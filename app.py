@@ -24,7 +24,30 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Callable
 from functools import wraps
 from dotenv import load_dotenv
-import random  # ✅ Aquí va, con los demás imports
+import tiktoken
+import random  
+from streamlit import secrets
+# --- PARA CARGA DE DOCUMENTOS ---
+try:
+    import PyPDF2
+    from docx import Document
+except ImportError:
+    PyPDF2 = None
+    Document = None
+    print("[WARNING] PyPDF2 o python-docx no instalados. Función de carga de documentos deshabilitada.")
+# --- PARA VOZ (TTS) ---
+from gtts import gTTS
+from io import BytesIO
+# --- PARA MEMORIA A LARGO PLAZO (FAISS + Embeddings) ---
+try:
+    from sentence_transformers import SentenceTransformer
+    import faiss
+    import numpy as np
+except ImportError:
+    SentenceTransformer = None
+    faiss = None
+    np = None
+    print("[WARNING] sentence-transformers o faiss no instalados. Memoria a largo plazo deshabilitada.")
 
 load_dotenv()
 
@@ -85,6 +108,178 @@ def cargar_json(ruta: str) -> dict:
     except Exception as e:
         print(f"[ERROR] No se pudo cargar {ruta}: {e}")
         return {}
+    def construir_contexto_conversacional(historial: list, max_tokens: int = 2048) -> str:
+     """Construye un contexto de conversación coherente, respetando límite de tokens."""
+    encoder = tiktoken.encoding_for_model("gpt-3.5-turbo")  # Funciona bien para la mayoría de modelos
+    contexto = ""
+    tokens_usados = 0
+    
+    for msg in reversed(historial):
+        parte = f"{msg['role'].upper()}: {msg['content']}\n"
+        tokens_parte = len(encoder.encode(parte))
+        
+        if tokens_usados + tokens_parte > max_tokens:
+            break
+            
+        contexto = parte + contexto
+        tokens_usados += tokens_parte
+        
+    return contexto.strip()
+
+def detectar_herramienta_necesaria(prompt: str) -> str:
+    """Detecta qué herramienta necesita el usuario según su pregunta."""
+    prompt_lower = prompt.lower()
+    if any(p in prompt_lower for p in ["busca", "qué es", "define", "noticias", "actualidad", "últimas noticias", "cómo funciona"]):
+        return "buscar_en_web"
+    elif any(p in prompt_lower for p in ["calcula", "cuánto es", "matemáticas", "fórmula", "ecuación", "resuelve", "+", "-", "*", "/"]):
+        return "calculadora"
+    elif any(p in prompt_lower for p in ["traduce", "traducción", "en inglés", "en español", "en francés", "en alemán", "significa"]):
+        return "traductor"
+    else:
+        return "chat"
+
+    def groq_llamada(prompt: str, historial: list) -> str:
+     """Llama a la API de Groq con el modelo Llama 3."""
+    try:
+        from groq import Groq
+        client = Groq(api_key=secrets["GROQ_API_KEY"])
+        mensajes = [{"role": "system", "content": "Eres GRIND, una entrenadora de vida directa y motivadora."}]
+        # Añadir historial
+        for msg in historial[-5:]:  # Últimos 5 mensajes
+            mensajes.append({"role": msg["role"], "content": msg["content"]})
+        # Añadir pregunta actual
+        mensajes.append({"role": "user", "content": prompt})
+        # Llamar a Groq
+        chat_completion = client.chat.completions.create(
+            messages=mensajes,
+            model="llama3-8b-8192",
+            temperature=0.7,
+            max_tokens=512
+        )
+        return chat_completion.choices[0].message.content
+    except Exception as e:
+        manejar_error("Groq API", e)
+        return "No pude conectar con Groq. Pero tú sí puedes elegir: actúa."
+
+def calcular(prompt: str) -> str:
+    """Calcula expresiones matemáticas simples de forma segura."""
+    import re
+    # Extraer solo números, operadores básicos y paréntesis
+    safe_expr = re.sub(r'[^0-9+\-*/(). ]', '', prompt)
+    try:
+        # Evaluar de forma segura (¡solo para demo! En producción usa `asteval` o `sympy`)
+        resultado = eval(safe_expr, {"__builtins__": {}})
+        return f"🧮 Resultado: {resultado}"
+    except Exception:
+        return "⚠️ No pude calcular eso. Intenta con una operación simple como '2 + 2'."
+
+def traducir_texto(prompt: str) -> str:
+    """Traduce texto usando deep-translator (estable y sin conflictos)."""
+    try:
+        from deep_translator import GoogleTranslator, single_detection
+        
+        # Detectar idioma de origen
+        origen = single_detection(prompt, api_key=None)  # Usa detección local
+        destinos = {
+            "en inglés": "en",
+            "en español": "es",
+            "en francés": "fr",
+            "en alemán": "de",
+            "en portugués": "pt",
+            "en italiano": "it"
+        }
+        
+        # Detectar idioma destino
+        destino = "en"  # por defecto
+        for frase, lang in destinos.items():
+            if frase in prompt.lower():
+                destino = lang
+                break
+        
+        if origen == destino:
+            return "⚠️ El texto ya está en ese idioma."
+            
+        # Traducir
+        translator = GoogleTranslator(source=origen, target=destino)
+        traduccion = translator.translate(prompt)
+        return f"🌍 Traducción ({origen} → {destino}): {traduccion}"
+    except Exception as e:
+        return f"⚠️ Error al traducir: {str(e)}. Prueba más tarde."
+
+def ejecutar_herramienta(herramienta: str, prompt: str) -> str:
+    """Ejecuta la herramienta seleccionada y devuelve el resultado."""
+    if herramienta == "buscar_en_web":
+        return buscar_en_web(prompt)
+    elif herramienta == "calculadora":
+        return calcular(prompt)
+    elif herramienta == "traductor":
+        return traducir_texto(prompt)
+    else:
+        return prompt  # Solo chat# 👇👇👇 PEGA ESTO DESPUÉS DE construir_contexto_conversacional
+
+def detectar_herramienta_necesaria(prompt: str) -> str:
+    """Detecta qué herramienta necesita el usuario según su pregunta."""
+    prompt_lower = prompt.lower()
+    if any(p in prompt_lower for p in ["busca", "qué es", "define", "noticias", "actualidad", "últimas noticias", "cómo funciona"]):
+        return "buscar_en_web"
+    elif any(p in prompt_lower for p in ["calcula", "cuánto es", "matemáticas", "fórmula", "ecuación", "resuelve", "+", "-", "*", "/"]):
+        return "calculadora"
+    elif any(p in prompt_lower for p in ["traduce", "traducción", "en inglés", "en español", "en francés", "en alemán", "significa"]):
+        return "traductor"
+    else:
+        return "chat"
+
+def calcular(prompt: str) -> str:
+    """Calcula expresiones matemáticas simples de forma segura."""
+    import re
+    # Extraer solo números, operadores básicos y paréntesis
+    safe_expr = re.sub(r'[^0-9+\-*/(). ]', '', prompt)
+    try:
+        # Evaluar de forma segura (¡solo para demo! En producción usa `asteval` o `sympy`)
+        resultado = eval(safe_expr, {"__builtins__": {}})
+        return f"🧮 Resultado: {resultado}"
+    except Exception:
+        return "⚠️ No pude calcular eso. Intenta con una operación simple como '2 + 2'."
+
+def traducir_texto(prompt: str) -> str:
+    """Traduce texto usando deep-translator (estable y sin conflictos)."""
+    try:
+        from deep_translator import GoogleTranslator, single_detection
+        # Detectar idioma de origen
+        origen = single_detection(prompt, api_key=None)  # Usa detección local
+        destinos = {
+            "en inglés": "en",
+            "en español": "es",
+            "en francés": "fr",
+            "en alemán": "de",
+            "en portugués": "pt",
+            "en italiano": "it"
+        }
+        # Detectar idioma destino
+        destino = "en"  # por defecto
+        for frase, lang in destinos.items():
+            if frase in prompt.lower():
+                destino = lang
+                break
+        if origen == destino:
+            return "⚠️ El texto ya está en ese idioma."
+        # Traducir
+        translator = GoogleTranslator(source=origen, target=destino)
+        traduccion = translator.translate(prompt)
+        return f"🌍 Traducción ({origen} → {destino}): {traduccion}"
+    except Exception as e:
+        return f"⚠️ Error al traducir: {str(e)}. Prueba más tarde."
+
+def ejecutar_herramienta(herramienta: str, prompt: str) -> str:
+    """Ejecuta la herramienta seleccionada y devuelve el resultado."""
+    if herramienta == "buscar_en_web":
+        return buscar_en_web(prompt)
+    elif herramienta == "calculadora":
+        return calcular(prompt)
+    elif herramienta == "traductor":
+        return traducir_texto(prompt)
+    else:
+        return prompt  # Solo chat
 
 def detectar_idioma(texto: str) -> str:
     """Detecta el idioma del usuario por palabras clave."""
@@ -114,11 +309,151 @@ def detectar_idioma(texto: str) -> str:
     else:
         return "español"
 
+        # --- VOZ: TEXTO A HABLA ---
+def reproducir_voz(texto: str, idioma: str = "es") -> bytes:
+    """Convierte texto a audio MP3 usando Google TTS."""
+    try:
+        # Mapear idiomas soportados por GRIND a códigos de gTTS
+        lang_map = {
+            "español": "es",
+            "english": "en",
+            "français": "fr",
+            "deutsch": "de",
+            "português": "pt",
+            "català": "ca",
+            "euskera": "eu",
+            "italiano": "it",
+            "japonés": "ja",
+            "chino": "zh-CN",
+            "árabe": "ar"
+        }
+        lang_code = lang_map.get(idioma, "es")  # Por defecto español
+        tts = gTTS(text=texto, lang=lang_code, slow=False)
+        mp3_fp = BytesIO()
+        tts.write_to_fp(mp3_fp)
+        return mp3_fp.getvalue()
+    except Exception as e:
+        manejar_error("Voz (TTS)", e)
+        return None
+
 def formatear_respuesta(texto: str, nombre: str = "Usuario") -> str:
     """Añade estilo, metáforas y personalidad de GRIND a cualquier respuesta."""
     inicio = f"🔥 {nombre}, escucha:"
     final = "💡 Recuerda: el grind no es sufrimiento. Es elección."
     return f"{inicio} {texto} {final}"
+
+    # --- MEMORIA VECTORIAL A LARGO PLAZO ---
+class MemoriaVectorial:
+    def __init__(self, user_id: str, dimension: int = 384):
+        self.user_id = user_id
+        self.dimension = dimension
+        self.model = SentenceTransformer('all-MiniLM-L6-v2') if SentenceTransformer else None
+        self.index = faiss.IndexFlatL2(dimension) if faiss else None
+        self.memorias = []  # Lista de diccionarios: {"texto": str, "metadata": dict, "embedding": np.array}
+        self.cargar_memorias()
+
+    def cargar_memorias(self):
+        """Carga memorias previas desde archivo local."""
+        ruta = f"data/memoria/{self.user_id}_memoria.json"
+        if os.path.exists(ruta) and self.model and self.index:
+            try:
+                with open(ruta, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                for item in data:
+                    texto = item["texto"]
+                    embedding = np.array(item["embedding"], dtype='float32')
+                    self.memorias.append({
+                        "texto": texto,
+                        "metadata": item.get("metadata", {}),
+                        "embedding": embedding
+                    })
+                    self.index.add(np.array([embedding]))
+            except Exception as e:
+                print(f"[ERROR] No se pudo cargar memoria para {self.user_id}: {e}")
+
+    def guardar_memorias(self):
+        """Guarda todas las memorias en archivo local."""
+        ruta = f"data/memoria/{self.user_id}_memoria.json"
+        os.makedirs(os.path.dirname(ruta), exist_ok=True)
+        if self.model and self.index:
+            try:
+                data = []
+                for mem in self.memorias:
+                    data.append({
+                        "texto": mem["texto"],
+                        "metadata": mem["metadata"],
+                        "embedding": mem["embedding"].tolist()
+                    })
+                with open(ruta, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                print(f"[ERROR] No se pudo guardar memoria para {self.user_id}: {e}")
+
+    def agregar_memoria(self, texto: str, metadata: dict = None):
+        """Agrega un nuevo texto a la memoria vectorial."""
+        if not self.model or not self.index:
+            return
+        try:
+            # Generar embedding
+            embedding = self.model.encode([texto])[0].astype('float32')
+            # Guardar en lista
+            memoria_item = {
+                "texto": texto,
+                "metadata": metadata or {},
+                "embedding": embedding
+            }
+            self.memorias.append(memoria_item)
+            # Agregar al índice FAISS
+            self.index.add(np.array([embedding]))
+            # Guardar inmediatamente
+            self.guardar_memorias()
+        except Exception as e:
+            print(f"[ERROR] No se pudo agregar memoria: {e}")
+
+    def buscar_similares(self, query: str, k: int = 3) -> List[Dict]:
+        """Busca las k memorias más similares a la consulta."""
+        if not self.model or not self.index or len(self.memorias) == 0:
+            return []
+        try:
+            # Generar embedding de la consulta
+            query_embedding = self.model.encode([query])[0].astype('float32')
+            # Buscar en FAISS
+            D, I = self.index.search(np.array([query_embedding]), k)
+            # Devolver resultados
+            resultados = []
+            for idx in I[0]:
+                if idx >= 0 and idx < len(self.memorias):
+                    resultados.append(self.memorias[idx])
+            return resultados
+        except Exception as e:
+            print(f"[ERROR] No se pudo buscar en memoria: {e}")
+            return []
+   
+    # --- EXTRACCIÓN DE TEXTO DE DOCUMENTOS ---
+def extraer_texto_de_archivo(archivo) -> str:
+    """Extrae texto de archivos PDF, DOCX o TXT."""
+    try:
+        if archivo.name.endswith(".pdf"):
+            if PyPDF2 is None:
+                return "[Error] PyPDF2 no instalado."
+            reader = PyPDF2.PdfReader(archivo)
+            texto = ""
+            for page in reader.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    texto += extracted + " "
+            return texto.strip()
+        elif archivo.name.endswith(".docx"):
+            if Document is None:
+                return "[Error] python-docx no instalado."
+            doc = Document(archivo)
+            return " ".join([p.text for p in doc.paragraphs if p.text.strip()])
+        elif archivo.name.endswith(".txt"):
+            return archivo.read().decode("utf-8")
+        else:
+            return "[Error] Formato no soportado. Usa PDF, DOCX o TXT."
+    except Exception as e:
+        return f"[Error al leer archivo] {str(e)}"
 
 # --- CONOCIMIENTO INTERNO DE GRIND ---
 grind_mind = cargar_json("grind_mind.json") or {
@@ -377,22 +712,74 @@ def tinyllama_offline(prompt: str, modo: str = "normal") -> str:
         return f"[ERROR] No pude conectar con mi voz local. Pero tú sí puedes elegir: actúa. Detalle: {str(e)}"
 # --- FILTRO DE PERSONALIDAD UNIFICADA ---
 def aplicar_personalidad_grind(respuesta: str, modo: str, idioma: str = "español") -> str:
-    """Añade frases de fuego al final de cada respuesta."""
-    frases_fuego = {
-        "español": [
-            "No estás cansado. Estás cómodo.",
-            "El grind no es sufrimiento. Es elección.",
-            "No necesitas motivación. Necesitas acción.",
-            "Tu mente no se entrena. Se neuroforja."
-        ],
-        "english": [
-            "You're not tired. You're comfortable.",
-            "The grind isn't suffering. It's a choice.",
-            "You don't need motivation. You need action.",
-            "Your mind isn't trained. It's forged."
-        ]
-    }
+    """Añade frases de fuego al final de cada respuesta, ajustando el tono según preferencia del usuario."""
+    
+    # Obtener tono y apodo del usuario
+    tono = st.session_state.get("tono_grind", "Empático")
+    apodo = st.session_state.get("apodo_usuario", "Usuario")
+    
+    # Frases según tono
+    if tono == "Brutal":
+        frases_fuego = {
+            "español": [
+                "No estás cansado. Estás cómodo. Y la comodidad es para los débiles.",
+                "El grind no es sufrimiento. Es elección. Y tú eliges ser débil cada día que no actúas.",
+                "No necesitas motivación. Necesitas agallas. ¿Las tienes?",
+                "Tu mente no se entrena. Se neuroforja. A golpes. ¿Estás dispuesto?"
+            ],
+            "english": [
+                "You're not tired. You're comfortable. And comfort is for the weak.",
+                "The grind isn't suffering. It's a choice. And you choose weakness every day you don't act.",
+                "You don't need motivation. You need guts. Do you have them?",
+                "Your mind isn't trained. It's forged. With hammer blows. Are you ready?"
+            ]
+        }
+    elif tono == "Neutral":
+        frases_fuego = {
+            "español": [
+                "Recuerda: el grind no es sufrimiento, es elección.",
+                "Progreso > perfección.",
+                "La disciplina es consistencia, no motivación.",
+                "Cada acción, por pequeña, cuenta."
+            ],
+            "english": [
+                "Remember: the grind isn't suffering, it's a choice.",
+                "Progress > perfection.",
+                "Discipline is consistency, not motivation.",
+                "Every action, no matter how small, counts."
+            ]
+        }
+    else:  # Empático (por defecto)
+        frases_fuego = {
+            "español": [
+                "No estás cansado. Estás cómodo. Y eso está bien, pero puedes más.",
+                "El grind no es sufrimiento. Es elección. Y hoy elegiste intentarlo. Eso ya es victoria.",
+                "No necesitas motivación. Necesitas empezar. Pequeño paso. Gran cambio.",
+                "Tu mente no se entrena. Se neuroforja. Y cada día que eliges, la forjas más fuerte."
+            ],
+            "english": [
+                "You're not tired. You're comfortable. And that's okay, but you can do more.",
+                "The grind isn't suffering. It's a choice. And today you chose to try. That's already a win.",
+                "You don't need motivation. You need to start. Small step. Big change.",
+                "Your mind isn't trained. It's forged. And every day you choose, you forge it stronger."
+            ]
+        }
+    
     frase_final = random.choice(frases_fuego.get(idioma, frases_fuego["español"]))
+    
+    # Personalizar el saludo con el apodo
+    if "🔥" in respuesta or "🌟" in respuesta or "💡" in respuesta:
+        # Si ya tiene un emoji de inicio, lo reemplazamos con el apodo
+        if "🔥" in respuesta:
+            respuesta = respuesta.replace("🔥", f"🔥 {apodo},")
+        elif "🌟" in respuesta:
+            respuesta = respuesta.replace("🌟", f"🌟 {apodo},")
+        elif "💡" in respuesta:
+            respuesta = respuesta.replace("💡", f"💡 {apodo},")
+    else:
+        # Si no tiene emoji de inicio, lo añadimos
+        respuesta = f"🔥 {apodo}, {respuesta}"
+    
     return f"{respuesta.strip()} 💡 {frase_final}"
 
 # --- SISTEMA DE IDENTIDAD DEL USUARIO ---
@@ -587,35 +974,171 @@ def mostrar_habitos_diarios(user_id: str):
 
 # --- INTERFAZ DE CHAT ---
 def interfaz_grind():
-    st.title("🔥 GRIND 15000")
-    st.write("Tu entrenadora humana con fuego real.")
+    # === SIDEBAR ===
+    with st.sidebar:
+        st.markdown("### 💬 Tus chats")
+        if "historial" in st.session_state:
+            for i, msg in enumerate(st.session_state.historial[:10]):
+                if msg["role"] == "user":
+                    titulo = generar_titulo_chat(msg["content"])
+                    st.button(titulo, key=f"chat_{i}")
+        st.markdown("---")
+        if "username" in st.session_state:
+            st.markdown(f"👤 **{st.session_state.username}**")
+
+                    # 🎨 PERSONALIZACIÓN AVANZADA DE GRIND
+        st.markdown("### 🎨 Personaliza a GRIND")
+        
+        # Tono de voz
+        tono_actual = st.session_state.get("tono_grind", "Empático")
+        tono = st.selectbox(
+            "🗣️ Tono de voz",
+            ["Empático", "Brutal", "Neutral"],
+            index=["Empático", "Brutal", "Neutral"].index(tono_actual),
+            key="select_tono"
+        )
+        st.session_state.tono_grind = tono
+        
+        # Apodo del usuario
+        apodo_actual = st.session_state.get("apodo_usuario", st.session_state.get("username", "Usuario"))
+        apodo = st.text_input(
+            "📛 ¿Cómo quieres que te llame?",
+            value=apodo_actual,
+            key="input_apodo"
+        )
+        st.session_state.apodo_usuario = apodo
+        
+        # Mostrar preview de cómo te llamará GRIND
+        st.markdown(f"<div style='font-size: 12px; color: #B0B0B0; margin-top: 5px;'>👉 GRIND te llamará: <strong>{apodo}</strong></div>", unsafe_allow_html=True)
+        st.markdown("---")
+
+    # === CUERPO PRINCIPAL ===
+    if len(st.session_state.get("historial", [])) == 0:
+        st.title("GRIND")
+        st.write("Tu entrenadora personal.")
+
     if "usuario_id" not in st.session_state:
         st.session_state.usuario_id = f"user_{int(time.time())}"
     if "historial" not in st.session_state:
         st.session_state.historial = cargar_historial(st.session_state.usuario_id)
+
+    # 🧠 INICIALIZAR MEMORIA A LARGO PLAZO
+    if "memoria_vectorial" not in st.session_state:
+        st.session_state.memoria_vectorial = MemoriaVectorial(st.session_state.usuario_id)
     mostrar_eco_de_grind()
+
     for msg in st.session_state.historial:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
-    if prompt := st.chat_input("¿Qué vas a grindear hoy?"):
-        st.session_state.historial.append({"role": "user", "content": prompt, "timestamp": datetime.now().isoformat()})
-        guardar_en_supabase(st.session_state.usuario_id, {"role": "user", "content": prompt})
+               
+                # 📄 CARGADOR DE DOCUMENTOS (nuevo)
+    uploaded_file = st.file_uploader("📄 Sube un documento (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"])
+    if uploaded_file:
+        texto_documento = extraer_texto_de_archivo(uploaded_file)
+        if texto_documento and not texto_documento.startswith("[Error"):
+            st.session_state.documento_contexto = texto_documento
+            st.success("✅ Documento cargado. Pregunta sobre su contenido.")
+        else:
+            st.error(f"⚠️ No pude procesar el archivo: {texto_documento}")
+
+    # === INPUT DEL USUARIO ===
+    if prompt := st.chat_input("¿Qué necesitas?"):
+        # 1️⃣ Guardar mensaje del usuario en memoria
+        st.session_state.historial.append({
+            "role": "user",
+            "content": prompt,
+            "timestamp": datetime.now().isoformat()
+        })
+        guardar_en_supabase(st.session_state.usuario_id, {
+            "role": "user",
+            "content": prompt
+        })
+
+        # 2️⃣ Mostrar mensaje del usuario (💬 a la derecha con burbuja)
         with st.chat_message("user"):
             st.write(prompt)
+
+               # 3️⃣ Mostrar respuesta de GRIND ( a la izquierda sin burbuja)
         with st.chat_message("assistant"):
-            with st.spinner("🔥 GRIND está pensando..."):
+            with st.spinner(" pensando..."):
                 idioma = detectar_idioma(prompt)
-                respuesta = razonar_con_grind(prompt, st.session_state.historial, idioma)
+                respuesta = razonar_con_grind(
+                    prompt,
+                    st.session_state.historial,
+                    idioma
+                )
+                # Efecto "escribiendo"
                 message_placeholder = st.empty()
                 full_response = ""
                 for chunk in respuesta.split():
                     full_response += chunk + " "
                     time.sleep(0.05)
-                    message_placeholder.markdown(f"<div style='white-space: pre-line;'>{full_response}▌</div>", unsafe_allow_html=True)
-                message_placeholder.markdown(f"<div style='white-space: pre-line;'>{full_response}</div>", unsafe_allow_html=True)
-        st.session_state.historial.append({"role": "assistant", "content": respuesta, "timestamp": datetime.now().isoformat()})
-        guardar_en_supabase(st.session_state.usuario_id, {"role": "assistant", "content": respuesta})
+                    message_placeholder.markdown(
+                        f"<div style='white-space: pre-line;'>{full_response}▌</div>",
+                        unsafe_allow_html=True
+                    )
+                message_placeholder.markdown(
+                    f"<div style='white-space: pre-line;'>{full_response}</div>",
+                    unsafe_allow_html=True
+                )
+                
+            # 🔊 REPRODUCIR RESPUESTA EN VOZ
+            audio_bytes = reproducir_voz(respuesta, idioma=idioma)
+            if audio_bytes:
+                st.audio(audio_bytes, format="audio/mp3")
+                
+            # ✏️ BOTONES DE REGENERAR Y EDITAR
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("🔄 Regenerar", key=f"regen_{len(st.session_state.historial)}"):
+                    if st.session_state.historial and st.session_state.historial[-1]["role"] == "assistant":
+                        st.session_state.historial.pop()
+                    st.rerun()
+
+            with col2:
+                nuevo_prompt = st.text_input(
+                    "✏️ Editar pregunta", 
+                    value=prompt, 
+                    key=f"edit_{len(st.session_state.historial)}"
+                )
+                if st.button("✅ Aplicar edición", key=f"apply_{len(st.session_state.historial)}"):
+                    if st.session_state.historial and st.session_state.historial[-1]["role"] == "user":
+                        st.session_state.historial[-1]["content"] = nuevo_prompt
+                    st.rerun()
+                    
+        
+        # 4️⃣ Guardar la respuesta de GRIND en historial y base de datos (¡DESPUÉS de los botones!)
+        st.session_state.historial.append({
+            "role": "assistant",
+            "content": respuesta,
+            "timestamp": datetime.now().isoformat()
+        })
+        guardar_en_supabase(st.session_state.usuario_id, {
+            "role": "assistant",
+            "content": respuesta
+        })
+
+        # 5️⃣ Activar ritual diario (si aplica)
         activar_ritual_diario(st.session_state.usuario_id)
+                # 🧠 GUARDAR MEMORIA IMPORTANTE (si el usuario revela algo personal)
+        if "memoria_vectorial" in st.session_state:
+            texto_usuario = prompt.lower()
+            palabras_clave_memoria = [
+                "quiero", "necesito", "sueño", "meta", "objetivo", "miedo", "fracaso", 
+                "logré", "aprendí", "descubrí", "cambié", "mejoré", "superé", "prometo"
+            ]
+            if any(p in texto_usuario for p in palabras_clave_memoria):
+                metadata = {
+                    "tipo": "declaracion_personal",
+                    "fecha": datetime.now().isoformat(),
+                    "idioma": idioma
+                }
+                st.session_state.memoria_vectorial.agregar_memoria(
+                    f"USUARIO DIJO: {prompt}",
+                    metadata
+                )
+                # Opcional: notificar al usuario
+                # st.info("🧠 He guardado eso en tu memoria de largo plazo. Lo recordaré.")
 
 # --- BACKUP LOCAL DE CHATS ---
 def guardar_backup_local(user_id: str, role: str, content: str):
@@ -913,6 +1436,34 @@ def razonar_con_grind(prompt, historial, idioma):
     modo = activar_modo(prompt)
     prompt_lower = prompt.lower().strip()
 
+        # 🧠 RECUPERAR MEMORIAS RELEVANTES DEL USUARIO
+    memorias_contexto = ""
+    if "memoria_vectorial" in st.session_state:
+        resultados = st.session_state.memoria_vectorial.buscar_similares(prompt, k=3)
+        if resultados:
+            memorias_contexto = "\n".join([
+                f"MEMORIA PASADA [{i+1}]: {res['texto']}" 
+                for i, res in enumerate(resultados)
+            ])
+            prompt = f"""CONTEXTO DE MEMORIAS PASADAS:
+{memorias_contexto}
+
+---
+PREGUNTA ACTUAL DEL USUARIO:
+{prompt}"""
+            
+        # 📄 SI HAY DOCUMENTO CARGADO, ENRIQUECE EL PROMPT
+    if "documento_contexto" in st.session_state:
+        contexto_doc = st.session_state.documento_contexto[:3000]  # Limitar a 3000 caracteres
+        prompt = f"""DOCUMENTO DE REFERENCIA:
+{contexto_doc}
+
+---
+PREGUNTA DEL USUARIO SOBRE EL DOCUMENTO:
+{prompt}"""
+        # Opcional: limpiar el contexto después de usarlo
+        # del st.session_state.documento_contexto
+
     if modo == "alerta":
         linea = buscar_linea_de_ayuda(prompt, idioma)
         return (f"🌟 Escucho tu dolor. No estás solo. Tu vida importa.\n"
@@ -945,7 +1496,7 @@ def razonar_con_grind(prompt, historial, idioma):
         respuesta_fuerte = generar_respuesta_fuerte(prompt, idioma)
         return aplicar_personalidad_grind(respuesta_fuerte, "guerra", idioma)
 
-    # Para todo lo demás (clases, tareas, vida diaria), usa el modo empático
+     # Para todo lo demás (clases, tareas, vida diaria), usa el modo empático
     try:
         # Primero intenta con el conocimiento adquirido
         conocimiento = cargar_lecciones_recientes(100)
@@ -953,12 +1504,35 @@ def razonar_con_grind(prompt, historial, idioma):
             if item["pregunta"].lower() in prompt_lower:
                 return aplicar_personalidad_grind(item["respuesta"], "normal", idioma)
         
-        # Si no hay conocimiento previo, responde con empatía
-        return generar_respuesta_empatica(prompt, idioma)
-    
+        # Construye el contexto conversacional con los últimos mensajes
+        contexto_conversacional = construir_contexto_conversacional(historial)  
+
+        # 🔧 Detecta y ejecuta herramienta automática si es necesario
+        herramienta = detectar_herramienta_necesaria(prompt)
+        if herramienta != "chat":
+            resultado_herramienta = ejecutar_herramienta(herramienta, prompt)
+            prompt_con_contexto = f"""Contexto de la conversación:
+{contexto_conversacional}
+
+USUARIO PIDIÓ USAR LA HERRAMIENTA: '{herramienta}'
+RESULTADO DE LA HERRAMIENTA:
+{resultado_herramienta}
+
+INSTRUCCIÓN PARA GRIND:
+Resume, explica o reformula el resultado de la herramienta para el usuario, con tu estilo único. No repitas el resultado tal cual. Hazlo humano, útil y con fuego.
+
+PREGUNTA ORIGINAL DEL USUARIO:
+{prompt}"""
+        else:
+            # Combina el contexto con la pregunta actual
+            prompt_con_contexto = f"Contexto de la conversación:\n{contexto_conversacional}\n\nPREGUNTA ACTUAL DEL USUARIO:\n{prompt}"
+
+        # Llama al router con el contexto (o con el resultado de la herramienta)
+        respuesta = decidir_y_responder(prompt_con_contexto, historial, idioma)
+
+        return aplicar_personalidad_grind(respuesta, modo, idioma)
     except:
         pass
-
     # Respaldo: si todo falla, responde con empatía
     return generar_respuesta_empatica(prompt, idioma)
 
@@ -1229,29 +1803,69 @@ def efecto_escribiendo(respuesta: str):
     message_placeholder.markdown(f"<div style='white-space: pre-line;'>{full_response}</div>", unsafe_allow_html=True)
 
 # --- LOGIN MANUAL ---
-def login_manual():
+def login_google():
+    """Muestra un botón para iniciar sesión con Google usando Supabase Auth."""
+    # Genera la URL de autorización de Supabase para Google
+    auth_url = f"{secrets['SUPABASE_URL']}/auth/v1/authorize?provider=google&redirect_to={secrets['REDIRECT_URL']}"
+
+    # Muestra un botón estilizado con un enlace
+    st.markdown(
+        f'<a href="{auth_url}" target="_self" style="display: inline-block; padding: 12px 24px; background: linear-gradient(45deg, #DB4437, #EA4335); color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);">🔑 Iniciar sesión con Google</a>',
+        unsafe_allow_html=True
+    )
+
+def manejar_callback():
+    """Maneja el callback de autenticación después del login con Google."""
+    query_params = st.experimental_get_query_params()
+    
+    # Supabase redirige con un parámetro 'code' si el login es exitoso
+    if "code" in query_params:
+        code = query_params["code"][0]
+        try:
+            # Inicializa cliente Supabase
+            from supabase import create_client
+            client = create_client(secrets["SUPABASE_URL"], secrets["SUPABASE_KEY"])
+            
+            # Intercambia el código por una sesión de usuario
+            session = client.auth.exchange_code_for_session(code)
+            user = session.user
+            
+            # Guarda la información del usuario en la sesión de Streamlit
+            st.session_state.logged_in = True
+            st.session_state.username = user.user_metadata.get('name', user.email.split('@')[0])
+            st.session_state.user_id = user.id  # ✅ UUID único y seguro de Supabase
+            st.session_state.user_email = user.email
+            
+            # Limpia los parámetros de la URL
+            st.experimental_set_query_params()
+            
+            # Recarga la página
+            st.rerun()
+            
+        except Exception as e:
+            st.error(f"Error al iniciar sesión: {str(e)}")
+            st.session_state.logged_in = False
+
+# --- FLUJO PRINCIPAL ACTUALIZADO ---
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
     st.markdown('<div class="login-container">', unsafe_allow_html=True)
     st.markdown("<h1>🔐 Acceder a GRIND</h1>", unsafe_allow_html=True)
-    st.markdown("<p>Autenticación simple para empezar a grindear.</p>", unsafe_allow_html=True)
-    username = st.text_input("Usuario")
-    password = st.text_input("Contraseña", type="password")
-    if st.button("Iniciar sesión"):
-        if password == "grind123":
-            st.session_state.logged_in = True
-            st.session_state.username = username
-            st.session_state.user_id = f"user_{hash(username) % 1000000}"
-            st.success(f"🔥 ¡Bienvenido, {username}!")
-            time.sleep(1)
-            st.rerun()
-        else:
-            st.error("Contraseña incorrecta. Usa 'grind123'")
-    st.markdown('<div style="color: #B0B0B0; font-size: 14px;">💡 Usa cualquier usuario. La contraseña es <strong>grind123</strong></div>', unsafe_allow_html=True)
+    st.markdown("<p>Autenticación profesional con Google.</p>", unsafe_allow_html=True)
+    
+    # Maneja el callback primero (si estamos regresando de Google)
+    manejar_callback()
+    
+    # Si aún no estamos logueados, muestra el botón de login
+    if not st.session_state.logged_in:
+        login_google()
+        st.markdown('<div style="color: #B0B0B0; font-size: 14px; text-align: center; margin-top: 20px;">💡 Usa tu cuenta de Google para acceder.</div>', unsafe_allow_html=True)
+    
     st.markdown('</div>', unsafe_allow_html=True)
-
-# --- FLUJO PRINCIPAL ---
-if "logged_in" not in st.session_state:
-    login_manual()
 else:
+    # Usuario logueado: muestra la interfaz principal
     interfaz_grind()
 
 # --- DISCLAIMER ---
