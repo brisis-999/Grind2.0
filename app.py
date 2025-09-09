@@ -1084,9 +1084,22 @@ def interfaz_grind():
         st.session_state.memoria_vectorial = MemoriaVectorial(st.session_state.usuario_id)
     mostrar_eco_de_grind()
 
+     # --- MOSTRAR HISTORIAL CON ESTILO PERSONALIZADO ---
     for msg in st.session_state.historial:
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+        if msg["role"] == "assistant": 
+            # Mensaje de GRIND (IA) - Texto plano a la izquierda
+            st.markdown(f"""
+                <div class="grind-message-container">
+                    <div class="grind-response">{msg["content"]}</div>
+                </div>
+            """, unsafe_allow_html=True)
+        else:
+            # Mensaje del usuario - Burbuja a la derecha
+            st.markdown(f"""
+                <div class="user-message-container">
+                    <div class="user-bubble">{msg["content"]}</div>
+                </div>
+            """, unsafe_allow_html=True)
                  
                     # --- RECORDATORIO SUAVE PARA LOGIN (OPCIONAL) ---
         # Mostrar después de unos mensajes o al intentar guardar algo
@@ -1167,30 +1180,44 @@ def interfaz_grind():
                     unsafe_allow_html=True
                 )
                 
-            # 🔊 REPRODUCIR RESPUESTA EN VOZ
+                 # 🔊 BOTÓN PARA REPRODUCIR RESPUESTA EN VOZ (opcional)
             audio_bytes = reproducir_voz(respuesta, idioma=idioma)
             if audio_bytes:
-                st.audio(audio_bytes, format="audio/mp3")
-                
-            # ✏️ BOTONES DE REGENERAR Y EDITAR
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("🔄 Regenerar", key=f"regen_{len(st.session_state.historial)}"):
-                    if st.session_state.historial and st.session_state.historial[-1]["role"] == "assistant":
-                        st.session_state.historial.pop()
-                    st.rerun()
-
-            with col2:
-                nuevo_prompt = st.text_input(
-                    "✏️ Editar pregunta", 
-                    value=prompt, 
-                    key=f"edit_{len(st.session_state.historial)}"
+                st.download_button(
+                    label="🔊 Escuchar",
+                    data=audio_bytes,
+                    file_name="respuesta_grind.mp3",
+                    mime="audio/mp3",
+                    key=f"audio_{len(st.session_state.historial)}"
                 )
-                if st.button("✅ Aplicar edición", key=f"apply_{len(st.session_state.historial)}"):
-                    if st.session_state.historial and st.session_state.historial[-1]["role"] == "user":
-                        st.session_state.historial[-1]["content"] = nuevo_prompt
-                    st.rerun()
-                    
+                
+                    # ✏️ BOTÓN DE EDICIÓN DISCRETO (solo para el último mensaje del usuario)
+            # Solo se muestra si el último mensaje del historial es el del usuario (el que acabamos de enviar)
+            if (st.session_state.historial and 
+                st.session_state.historial[-1]["role"] == "user" and
+                st.session_state.historial[-1]["content"] == prompt): # Asegurarse de que es el mensaje correcto
+                
+                # Usamos markdown para crear un ícono de edición que solo aparece al pasar el mouse
+                # sobre el mensaje del usuario. Como estamos dentro del mensaje de la IA,
+                # necesitamos un enfoque diferente. Mejor lo colocamos justo después
+                # de mostrar el mensaje del usuario en el historial.
+                # Por ahora, lo dejamos como un botón simple y pequeño.
+                # Una mejora futura sería usar CSS :hover en el contenedor del mensaje del usuario.
+                
+                with st.expander("✏️", expanded=False): # Usamos un expander muy pequeño como ícono
+                     nuevo_prompt = st.text_input(
+                         "Editar tu mensaje", 
+                         value=prompt, 
+                         key=f"edit_input_{len(st.session_state.historial)}",
+                         label_visibility="collapsed" # Oculta la etiqueta
+                     )
+                     if st.button("✅ Aplicar", key=f"apply_edit_{len(st.session_state.historial)}", use_container_width=False):
+                         if st.session_state.historial and st.session_state.historial[-1]["role"] == "user":
+                             st.session_state.historial[-1]["content"] = nuevo_prompt
+                             # También debemos eliminar la respuesta de la IA si se edita la pregunta
+                             if len(st.session_state.historial) > 1 and st.session_state.historial[-2]["role"] == "assistant":
+                                 st.session_state.historial.pop() # Eliminar respuesta de la IA
+                             st.rerun()
         
         # 4️⃣ Guardar la respuesta de GRIND en historial y base de datos (¡DESPUÉS de los botones!)
         st.session_state.historial.append({
@@ -1516,118 +1543,86 @@ def es_peticion_entrenamiento_fisico(prompt: str) -> bool:
     ]
     return any(p in prompt_lower for p in palabras_clave)
 
-# --- NUEVA FUNCIÓN: razonar_con_grind (MEJORADA) ---
-def razonar_con_grind(prompt, historial, idioma):
-    modo = activar_modo(prompt)
-    prompt_lower = prompt.lower().strip()
+# --- FUNCIÓN SIMPLIFICADA Y ACTUALIZADA PARA RAZONAR CON GRIND ---
+def razonar_con_grind(prompt: str, historial: list, idioma: str) -> str:
+    """
+    Lógica principal de GRIND:
+    1. Usa Groq (Llama 3) como base principal.
+    2. Si se necesita información (detectar_herramienta_necesaria), usa Serpapi.
+    3. Siempre aplica el estilo y personalidad de GRIND.
+    4. Requiere conexión a internet.
+    """
+    modo = activar_modo(prompt) # Detecta modo alerta, guerra, etc.
 
-        # 🧠 RECUPERAR MEMORIAS RELEVANTES DEL USUARIO
-    memorias_contexto = ""
-    if "memoria_vectorial" in st.session_state:
-        resultados = st.session_state.memoria_vectorial.buscar_similares(prompt, k=3)
-        if resultados:
-            memorias_contexto = "\n".join([
-                f"MEMORIA PASADA [{i+1}]: {res['texto']}" 
-                for i, res in enumerate(resultados)
-            ])
-            prompt = f"""CONTEXTO DE MEMORIAS PASADAS:
-{memorias_contexto}
-
----
-PREGUNTA ACTUAL DEL USUARIO:
-{prompt}"""
-            
-        # 📄 SI HAY DOCUMENTO CARGADO, ENRIQUECE EL PROMPT
-    if "documento_contexto" in st.session_state:
-        contexto_doc = st.session_state.documento_contexto[:3000]  # Limitar a 3000 caracteres
-        prompt = f"""DOCUMENTO DE REFERENCIA:
-{contexto_doc}
-
----
-PREGUNTA DEL USUARIO SOBRE EL DOCUMENTO:
-{prompt}"""
-        # Opcional: limpiar el contexto después de usarlo
-        # del st.session_state.documento_contexto
-
+    # --- MODO CRISIS (prioritario) ---
     if modo == "alerta":
         linea = buscar_linea_de_ayuda(prompt, idioma)
-        return (f"🌟 Escucho tu dolor. No estás solo. Tu vida importa.\n"
-                f"Por favor, contacta a una línea de ayuda real:\n{linea}\n"
-                f"Estoy aquí. No estás solo. Vamos a salir de esto. Juntos.\n"
-                f"💡 El grind no es sufrimiento. Es elección.")
+        respuesta_base = (f"🌟 Escucho tu dolor. No estás solo. Tu vida importa.\n"
+                          f"Por favor, contacta a una línea de ayuda real: {linea}\n"
+                          f"Estoy aquí. No estás solo. Vamos a salir de esto. Juntos.")
+        return aplicar_personalidad_grind(respuesta_base, modo, idioma)
 
-    patron = detectar_patron_usuario(historial, prompt)
-    if patron:
-        return aplicar_personalidad_grind(patron, modo, idioma)
-
-    if "neuroforja" in prompt_lower:
-        return aplicar_personalidad_grind(obtener_sabiduria("neuroforja", idioma), modo, idioma)
-    if "ikigai" in prompt_lower:
-        return aplicar_personalidad_grind(obtener_sabiduria("ikigai", idioma), modo, idioma)
-
-    conocimiento = cargar_lecciones_recientes(100)
-    for item in conocimiento:
-        if item["pregunta"].lower() in prompt_lower:
-            return aplicar_personalidad_grind(item["respuesta"], modo, idioma)
-
+    # --- VERIFICAR CONEXIÓN A INTERNET ---
     if not hay_internet():
-        respuesta = tinyllama_offline(prompt, modo)
-        return aplicar_personalidad_grind(respuesta, modo, idioma)
+        # Esta versión de GRIND requiere internet
+        return aplicar_personalidad_grind(
+            "Ups, parece que no tienes conexión a internet. GRIND necesita estar en línea para funcionar al máximo. Conéctate y seguimos entrenando juntos.",
+            "normal", idioma
+        )
 
-        # --- AQUÍ EMPIEZA LA LÓGICA DE DOBLE PERSONALIDAD ---
-    
-    # Si es una petición de entrenamiento físico, responde con fuerza
-    if es_peticion_entrenamiento_fisico(prompt):
-        respuesta_fuerte = generar_respuesta_fuerte(prompt, idioma)
-        return aplicar_personalidad_grind(respuesta_fuerte, "guerra", idioma)
-
-     # Para todo lo demás (clases, tareas, vida diaria), usa el modo empático
-    try:
-        # Primero intenta con el conocimiento adquirido
-        conocimiento = cargar_lecciones_recientes(100)
-        for item in conocimiento:
-            if item["pregunta"].lower() in prompt_lower:
-                return aplicar_personalidad_grind(item["respuesta"], "normal", idioma)
-        
-        # Construye el contexto conversacional con los últimos mensajes
-        contexto_conversacional = construir_contexto_conversacional(historial)  
-
-        # 🔧 Detecta y ejecuta herramienta automática si es necesario
-        herramienta = detectar_herramienta_necesaria(prompt)
-        if herramienta != "chat":
+    # --- DETECTAR Y EJECUTAR HERRAMIENTA SI ES NECESARIA ---
+    herramienta = detectar_herramienta_necesaria(prompt)
+    contexto_herramienta = ""
+    if herramienta != "chat":
+        try:
             resultado_herramienta = ejecutar_herramienta(herramienta, prompt)
-            prompt_con_contexto = f"""Contexto de la conversación:
-{contexto_conversacional}
-
-USUARIO PIDIÓ USAR LA HERRAMIENTA: '{herramienta}'
-RESULTADO DE LA HERRAMIENTA:
+            contexto_herramienta = f"""[INFORMACIÓN DE HERRAMIENTA '{herramienta}']:
 {resultado_herramienta}
 
-INSTRUCCIÓN PARA GRIND:
-Resume, explica o reformula el resultado de la herramienta para el usuario, con tu estilo único. No repitas el resultado tal cual. Hazlo humano, útil y con fuego.
+---
+"""
+        except Exception as e:
+            manejar_error(f"Ejecutar herramienta ({herramienta})", e)
+            contexto_herramienta = f"[No se pudo obtener información de '{herramienta}']\n---\n"
 
-PREGUNTA ORIGINAL DEL USUARIO:
-{prompt}"""
-        else:
-            # Combina el contexto con la pregunta actual
-            prompt_con_contexto = f"Contexto de la conversación:\n{contexto_conversacional}\n\nPREGUNTA ACTUAL DEL USUARIO:\n{prompt}"
+    # --- CONSTRUIR PROMPT PARA GROQ ---
+    # Combinar contexto de herramienta (si hay) con la pregunta
+    prompt_para_groq = f"{contexto_herramienta}{prompt}"
 
-        # Llama al router con el contexto (o con el resultado de la herramienta)
-        respuesta = decidir_y_responder(prompt_con_contexto, historial, idioma)
-
-        return aplicar_personalidad_grind(respuesta, modo, idioma)
-    except:
-        pass
-    # Respaldo: si todo falla, responde con empatía
-    return generar_respuesta_empatica(prompt, idioma)
-
-# --- DETECCIÓN DE CONEXIÓN ---
-def hay_internet():
+    # --- INTENTAR CON GROQ (Llama 3) ---
+    if secrets.get("GROQ_API_KEY"):
+        try:
+            respuesta_groq = groq_llamada(prompt_para_groq, historial)
+            if respuesta_groq and not respuesta_groq.startswith("["):
+                # Si Groq da una respuesta válida, la usamos
+                return aplicar_personalidad_grind(respuesta_groq, modo, idioma)
+            else:
+                # Groq devolvió un mensaje de error o vacío
+                raise Exception(f"Groq devolvió mensaje no válido: {respuesta_groq}")
+        except Exception as e:
+             manejar_error("Groq (en razonar_con_grind)", e)
+             # Si Groq falla, pasamos al siguiente paso
+    
+    # --- RESPALDO: USAR HUGGING FACE (Tu modelo TinyLlama entrenado) ---
+    # Solo se llega aquí si Groq falló o no está configurado
     try:
-        requests.get("https://httpbin.org/ip", timeout=3)
-        return True
-    except:
-        return False
+        # Construir un contexto básico para HF
+        contexto_basico = construir_contexto_conversacional(historial[-3:]) # Últimos 3 pares de mensajes
+        prompt_para_hf = f"CONTEXTO:\n{contexto_basico}\n\nPREGUNTA:\n{prompt_para_groq}"
+        
+        respuesta_hf = llamar_tinyllama_hf(prompt_para_hf)
+        if respuesta_hf and not respuesta_hf.startswith("["):
+            return aplicar_personalidad_grind(respuesta_hf, modo, idioma)
+        else:
+            # HF también falló o devolvió error
+            raise Exception(f"HF devolvió mensaje no válido: {respuesta_hf}")
+    except Exception as e:
+        manejar_error("Hugging Face (en razonar_con_grind)", e)
+        
+    # --- ÚLTIMO RECURSO: RESPUESTA GENÉRICA CON PERSONALIDAD ---
+    respuesta_final = "Estoy procesando tu petición con todas mis fuerzas, pero parece que hoy el universo pone a prueba tu paciencia. Vamos a intentarlo de nuevo, ¿de acuerdo? El grind no es sufrimiento. Es elección."
+    return aplicar_personalidad_grind(respuesta_final, modo, idioma)
+
 
 # --- CSS PERSONALIZADO ---
 st.markdown("""
@@ -1859,6 +1854,42 @@ st.markdown("""
         background-color: #1a1a1a;
         color: white;
         transform: scale(1.02);
+    }
+    /* Estilo para mensajes de la IA sin burbuja */
+    .grind-response {
+        text-align: left;
+        margin-right: 20%; /* Deja espacio a la derecha para el usuario */
+        padding: 10px 15px;
+        /* Sin borde ni fondo para simular texto plano */
+        color: var(--text);
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 1rem;
+        line-height: 1.5;
+        white-space: pre-line; /* Para respetar saltos de línea */
+    }
+
+    /* Estilo para el contenedor del mensaje de la IA */
+    .grind-message-container {
+        display: flex;
+        justify-content: flex-start; /* Alinea a la izquierda */
+        margin-bottom: 15px;
+    }
+
+    /* Estilo para el contenedor del mensaje del usuario */
+    .user-message-container {
+        display: flex;
+        justify-content: flex-end; /* Alinea a la derecha */
+        margin-bottom: 15px;
+    }
+
+    /* Opcional: Estilo para la burbuja del usuario si la quieres más definida */
+    .user-bubble {
+        background-color: var(--accent); /* Color de fondo del usuario */
+        color: white;
+        border-radius: 18px 18px 4px 18px; /* Burbuja con pico */
+        padding: 10px 15px;
+        max-width: 80%;
+        word-wrap: break-word;
     }
 </style>
 """, unsafe_allow_html=True)
