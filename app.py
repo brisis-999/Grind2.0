@@ -1012,6 +1012,63 @@ def interfaz_grind():
         st.markdown(f"<div style='font-size: 12px; color: #B0B0B0; margin-top: 5px;'>👉 GRIND te llamará: <strong>{apodo}</strong></div>", unsafe_allow_html=True)
         st.markdown("---")
 
+                # --- PANEL DE LOGIN EN SIDEBAR (OPCIONAL Y NO INVASIVO) ---
+        st.markdown("---")
+        if "logged_in" in st.session_state and st.session_state.logged_in:
+            st.markdown(f"👤 **{st.session_state.get('username', 'Usuario')}**")
+            if st.button("🚪 Cerrar sesión", key="logout_btn_sidebar"):
+                # Opcional: Implementar cierre de sesión con Supabase
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.query_params.clear() # Limpiar parámetros de URL
+                st.rerun()
+        else:
+            # Detectar idioma para el mensaje del expander
+            idioma_usuario = st.session_state.get("idioma_detectado", "español")
+            textos_expander = {
+                "español": "🔐 Acceder a tu cuenta",
+                "english": "🔐 Access your account",
+                "français": "🔐 Accéder à votre compte",
+                "deutsch": "🔐 Auf Ihr Konto zugreifen",
+                "português": "🔐 Acesse sua conta",
+                "català": "🔐 Accedeix al teu compte",
+                "euskera": "🔐 Sartu zure kontuan",
+                "italiano": "🔐 Accedi al tuo account"
+            }
+            texto_expander = textos_expander.get(idioma_usuario, textos_expander["español"])
+
+            textos_mensaje = {
+                "español": "**Guarda tu progreso y chats.**",
+                "english": "**Save your progress and chats.**",
+                "français": "**Sauvegardez votre progression et vos chats.**",
+                "deutsch": "**Speichern Sie Ihren Fortschritt und Ihre Chats.**",
+                "português": "**Salve seu progresso e chats.**",
+                "català": "**Desa el teu progrés i xats.**",
+                "euskera": "**Gorde zure aurrerapena eta txatak.**",
+                "italiano": "**Salva i tuoi progressi e le chat.**"
+            }
+            texto_mensaje = textos_mensaje.get(idioma_usuario, textos_mensaje["español"])
+
+            textos_footer = {
+                "español": "💡 Usa tu cuenta de Google.",
+                "english": "💡 Use your Google account.",
+                "français": "💡 Utilisez votre compte Google.",
+                "deutsch": "💡 Verwenden Sie Ihr Google-Konto.",
+                "português": "💡 Use sua conta do Google.",
+                "català": "💡 Utilitza el teu compte de Google.",
+                "euskera": "💡 Erabili zure Google kontua.",
+                "italiano": "💡 Usa il tuo account Google."
+            }
+            texto_footer = textos_footer.get(idioma_usuario, textos_footer["español"])
+
+            with st.expander(texto_expander, expanded=False):
+                st.markdown(texto_mensaje)
+                # Usar la función login_google actualizada
+                login_google()
+                st.markdown(f'<div style="color: #B0B0B0; font-size: 12px; margin-top: 10px;">{texto_footer}</div>', unsafe_allow_html=True) 
+        st.markdown("---")
+    
+
     # === CUERPO PRINCIPAL ===
     if len(st.session_state.get("historial", [])) == 0:
         st.title("GRIND")
@@ -1030,6 +1087,34 @@ def interfaz_grind():
     for msg in st.session_state.historial:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
+                 
+                    # --- RECORDATORIO SUAVE PARA LOGIN (OPCIONAL) ---
+        # Mostrar después de unos mensajes o al intentar guardar algo
+        if ("logged_in" not in st.session_state or not st.session_state.logged_in) and len(st.session_state.get("historial", [])) >= 3: # Ejemplo: después de 3 mensajes
+            # Detectar idioma para el mensaje (asegúrate de tener esta función o usa un valor por defecto)
+            # Asumiendo que tienes una función detectar_idioma(texto) o lo guardas en st.session_state
+            # Por simplicidad, usamos un valor por defecto o uno básico
+            idioma_usuario = st.session_state.get("idioma_detectado", "español")
+            # Si no tienes idioma_detectado, puedes intentar detectarlo del último mensaje del usuario
+            if idioma_usuario == "español": # Valor por defecto o no encontrado
+                 historial_usuario = [m["content"] for m in st.session_state.get("historial", []) if m["role"] == "user"]
+                 if historial_usuario:
+                     # Usa la función detectar_idioma que ya tienes definida
+                     idioma_usuario = detectar_idioma(historial_usuario[-1])
+
+            textos_recordatorio = {
+                "español": "💡 ¿Te está gustando GRIND? [🔐 Accede a tu cuenta](#sidebar) para guardar este chat y recibir recomendaciones personalizadas.",
+                "english": "💡 Enjoying GRIND? [🔐 Access your account](#sidebar) to save this chat and get personalized recommendations.",
+                "français": "💡 Vous aimez GRIND ? [🔐 Accédez à votre compte](#sidebar) pour enregistrer ce chat et recevoir des recommandations personnalisées.",
+                "deutsch": "💡 Gefällt Ihnen GRIND? [🔐 Greifen Sie auf Ihr Konto zu](#sidebar), um diesen Chat zu speichern und personalisierte Empfehlungen zu erhalten.",
+                "português": "💡 Gostando do GRIND? [🔐 Acesse sua conta](#sidebar) para salvar este chat e receber recomendações personalizadas.",
+                "català": "💡 T'agrada GRIND? [🔐 Accedeix al teu compte](#sidebar) per desar aquest xat i rebre recomanacions personalitzades.",
+                "euskera": "💡 GRIND gustatzen zaizu? [🔐 Sartu zure kontuan](#sidebar) txat hau gordetzeko eta gomendio pertsonalizatuak jasotzeko.",
+                "italiano": "💡 Ti piace GRIND? [🔐 Accedi al tuo account](#sidebar) per salvare questa chat e ricevere consigli personalizzati."
+            }
+            texto_recordatorio = textos_recordatorio.get(idioma_usuario, textos_recordatorio["español"])
+            st.info(texto_recordatorio)
+        # --- FIN RECORDATORIO SUAVE ---
                
                 # 📄 CARGADOR DE DOCUMENTOS (nuevo)
     uploaded_file = st.file_uploader("📄 Sube un documento (PDF, DOCX, TXT)", type=["pdf", "docx", "txt"])
@@ -1782,9 +1867,9 @@ st.markdown("""
 if "welcome_done" not in st.session_state:
     st.markdown("""
     <div class="welcome-container" id="welcome-screen">
-        <div class="welcome-logo">🔥 GRIND</div>
-        <p class="welcome-subtitle">Tu entrenadora de evolución humana</p>
-        <div class="suggestion" id="suggestion">¿Estás cómodo o estás evolucionando?</div>
+        <div class="welcome-logo"> GRIND</div>
+        <p class="welcome-subtitle">Tu entrenadora IA</p>
+        <div class="suggestion" id="suggestion">Eres bienvenido</div>
     </div>
     """, unsafe_allow_html=True)
     time.sleep(3)
@@ -1802,22 +1887,58 @@ def efecto_escribiendo(respuesta: str):
         time.sleep(0.01)
     message_placeholder.markdown(f"<div style='white-space: pre-line;'>{full_response}</div>", unsafe_allow_html=True)
 
-# --- LOGIN MANUAL ---
+# --- LOGIN CON GOOGLE (MEJORADO CON DETECCIÓN DE IDIOMA) ---
 def login_google():
     """Muestra un botón para iniciar sesión con Google usando Supabase Auth."""
-    # Genera la URL de autorización de Supabase para Google
-    auth_url = f"{secrets['SUPABASE_URL']}/auth/v1/authorize?provider=google&redirect_to={secrets['REDIRECT_URL']}"
+    try:
+        # Detectar idioma preferido del usuario (basado en el navegador o sesión)
+        # Opción 1: Usar st.query_params si viene un idioma (ej: ?lang=en)
+        query_params = st.query_params.to_dict()
+        lang_param = query_params.get("lang", [None])[0]
 
-    # Muestra un botón estilizado con un enlace
-    st.markdown(
-        f'<a href="{auth_url}" target="_self" style="display: inline-block; padding: 12px 24px; background: linear-gradient(45deg, #DB4437, #EA4335); color: white; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; box-shadow: 0 4px 8px rgba(0,0,0,0.2);">🔑 Iniciar sesión con Google</a>',
-        unsafe_allow_html=True
-    )
+        # Opción 2: Usar un valor de sesión si ya lo has detectado
+        idioma_usuario = st.session_state.get("idioma_detectado", "español")
 
+        # Priorizar parámetro de URL, luego sesión, luego español por defecto
+        idioma_a_usar = lang_param or idioma_usuario
+
+        # Definir textos del botón según el idioma
+        textos = {
+            "español": "🔑 Iniciar sesión con Google",
+            "english": "🔑 Sign in with Google",
+            "français": "🔑 Se connecter avec Google",
+            "deutsch": "🔑 Mit Google anmelden",
+            "português": "🔑 Entrar com o Google",
+            "català": "🔑 Iniciar sessió amb Google",
+            "euskera": "🔑 Hasi saioa Google-rekin",
+            "italiano": "🔑 Accedi con Google"
+        }
+        texto_boton = textos.get(idioma_a_usar, textos["español"])
+
+        # Genera la URL de autorización de Supabase para Google
+        # Asegúrate de que REDIRECT_URL está definida en tus secrets
+        redirect_url = secrets["REDIRECT_URL"]
+        auth_url = f"{secrets['SUPABASE_URL']}/auth/v1/authorize?provider=google&redirect_to={redirect_url}"
+
+        # Muestra un botón estilizado con un enlace
+        st.markdown(
+            f'<a href="{auth_url}" target="_self" style="display: inline-block; padding: 10px 16px; background: linear-gradient(45deg, #DB4437, #EA4335); color: white; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(0,0,0,0.2); text-align: center;">{texto_boton}</a>',
+            unsafe_allow_html=True
+        )
+    except KeyError as e:
+        # Manejar el caso donde REDIRECT_URL no está definida
+        st.error("❌ Error de configuración: Falta la variable `REDIRECT_URL` en los secretos.")
+        st.info("ℹ️ Para administradores: Define `REDIRECT_URL` en tu archivo `secrets.toml` o variables de entorno con la URL de esta aplicación (e.g., `https://TU_APP.streamlit.app`).")
+        print(f"[ERROR] Variable secreta no encontrada: {e}")
+    except Exception as e:
+        manejar_error("Botón Login Google", e)
+        st.warning("⚠️ No se pudo generar el botón de login. Inténtalo más tarde.")
+
+        # --- MANEJAR CALLBACK DE AUTENTICACIÓN (ACTUALIZADO) ---
 def manejar_callback():
     """Maneja el callback de autenticación después del login con Google."""
-    query_params = st.experimental_get_query_params()
-    
+    # Cambio: Usar st.query_params en lugar de st.experimental_get_query_params
+    query_params = st.query_params.to_dict()
     # Supabase redirige con un parámetro 'code' si el login es exitoso
     if "code" in query_params:
         code = query_params["code"][0]
@@ -1825,50 +1946,32 @@ def manejar_callback():
             # Inicializa cliente Supabase
             from supabase import create_client
             client = create_client(secrets["SUPABASE_URL"], secrets["SUPABASE_KEY"])
-            
             # Intercambia el código por una sesión de usuario
-            session = client.auth.exchange_code_for_session(code)
+            # Ajuste en la llamada para la nueva versión del cliente
+            session = client.auth.exchange_code_for_session({"auth_code": code})
             user = session.user
-            
             # Guarda la información del usuario en la sesión de Streamlit
             st.session_state.logged_in = True
             st.session_state.username = user.user_metadata.get('name', user.email.split('@')[0])
             st.session_state.user_id = user.id  # ✅ UUID único y seguro de Supabase
             st.session_state.user_email = user.email
-            
             # Limpia los parámetros de la URL
-            st.experimental_set_query_params()
-            
-            # Recarga la página
+            st.query_params.clear() # Cambio: Usar st.query_params para limpiar
+            # Recarga la página para reflejar el estado de login
             st.rerun()
-            
         except Exception as e:
             st.error(f"Error al iniciar sesión: {str(e)}")
             st.session_state.logged_in = False
 
-# --- FLUJO PRINCIPAL ACTUALIZADO ---
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
 
-if not st.session_state.logged_in:
-    st.markdown('<div class="login-container">', unsafe_allow_html=True)
-    st.markdown("<h1>🔐 Acceder a GRIND</h1>", unsafe_allow_html=True)
-    st.markdown("<p>Autenticación profesional con Google.</p>", unsafe_allow_html=True)
-    
-    # Maneja el callback primero (si estamos regresando de Google)
-    manejar_callback()
-    
-    # Si aún no estamos logueados, muestra el botón de login
-    if not st.session_state.logged_in:
-        login_google()
-        st.markdown('<div style="color: #B0B0B0; font-size: 14px; text-align: center; margin-top: 20px;">💡 Usa tu cuenta de Google para acceder.</div>', unsafe_allow_html=True)
-    
-    st.markdown('</div>', unsafe_allow_html=True)
-else:
-    # Usuario logueado: muestra la interfaz principal
-    interfaz_grind()
+# --- FLUJO PRINCIPAL ACTUALIZADO (LOGIN OPCIONAL) ---
+# Maneja el callback de autenticación SIEMPRE, por si el usuario regresa de Google
+manejar_callback()
 
-# --- DISCLAIMER ---
+# Mostrar la interfaz principal SIEMPRE
+interfaz_grind()
+
+# --- DISCLAIMER (ya existe, no cambiar) ---
 st.markdown("""<div class="footer">
     <p style="color: #555; font-size: 12px; text-align: center;">
         GRIND es una IA entrenadora humana. No reemplaza ayuda profesional en crisis.
