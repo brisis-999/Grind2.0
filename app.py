@@ -1551,6 +1551,7 @@ def razonar_con_grind(prompt: str, historial: list, idioma: str) -> str:
     2. Si se necesita información (detectar_herramienta_necesaria), usa Serpapi.
     3. Siempre aplica el estilo y personalidad de GRIND.
     4. Requiere conexión a internet.
+    5. Usa Hugging Face (tu modelo TinyLlama entrenado) como respaldo si Groq falla.
     """
     modo = activar_modo(prompt) # Detecta modo alerta, guerra, etc.
 
@@ -1563,8 +1564,8 @@ def razonar_con_grind(prompt: str, historial: list, idioma: str) -> str:
         return aplicar_personalidad_grind(respuesta_base, modo, idioma)
 
     # --- VERIFICAR CONEXIÓN A INTERNET ---
+    # Esta versión de GRIND requiere internet
     if not hay_internet():
-        # Esta versión de GRIND requiere internet
         return aplicar_personalidad_grind(
             "Ups, parece que no tienes conexión a internet. GRIND necesita estar en línea para funcionar al máximo. Conéctate y seguimos entrenando juntos.",
             "normal", idioma
