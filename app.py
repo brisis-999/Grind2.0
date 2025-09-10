@@ -96,6 +96,19 @@ def fallback_si_falla(func: Callable) -> Callable:
             return "No tengo la respuesta perfecta ahora. Pero sé esto: no estás solo. El grind no es sufrimiento. Es elección."
     return wrapper
 
+import requests
+
+def hay_internet() -> bool:
+    """
+    Verifica si hay conexión a internet intentando conectar a un servidor confiable.
+    """
+    try:
+        # Intenta conectar a Google DNS (o cualquier URL confiable)
+        requests.get("http://www.google.com", timeout=5)
+        return True
+    except requests.RequestException:
+        return False
+
 def cargar_json(ruta: str) -> dict:
     """Carga un archivo JSON de forma segura. Si no existe, devuelve un diccionario vacío."""
     try:
